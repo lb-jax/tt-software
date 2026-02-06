@@ -23,12 +23,51 @@ info: No chips detected in the cluster
 
 | 阶段 | 内容 | 状态 | 文档 |
 |------|------|------|------|
-| 1 | tt-metal 仓库结构概览 | ✅ 完成 | `01-repo-structure.md` |
-| 2 | 设备检测流程分析 | ✅ 完成 | `02-device-detection.md` |
-| 3 | UMD 层接口分析 | ✅ 完成 | `03-umd-interface.md` |
-| 4 | 命令提交流程 | ⏳ 待分析 | `04-command-submission.md` |
-| 5 | 内存管理 | ⏳ 待分析 | `05-memory-management.md` |
-| 6 | 模拟器接口设计 | ⏳ 待分析 | `06-simulator-interface.md` |
+| 1 | tt-metal 仓库结构概览 | ✅ 完成 | [`01-repo-structure.md`](./01-repo-structure.md) |
+| 2 | 设备检测流程分析 | ✅ 完成 | [`02-device-detection.md`](./02-device-detection.md) |
+| 3 | UMD 层接口分析 | ✅ 完成 | [`03-umd-interface.md`](./03-umd-interface.md) |
+| 4 | 命令提交流程 | ✅ 完成 | [`04-command-submission.md`](./04-command-submission.md) |
+| 5 | 内存管理 | ✅ 完成 | [`05-memory-management.md`](./05-memory-management.md) |
+| 6 | 模拟器接口设计 | ✅ 完成 | [`06-simulator-interface.md`](./06-simulator-interface.md) |
+
+## 分析总结
+
+### 关键发现
+
+1. **tt-metal 已有模拟器支持**: 通过 `TT_METAL_SIMULATOR` 环境变量可以启用 Simulator 模式
+2. **TTSIM 接口**: 只需实现 6 个函数的动态库 (`libttsim.so`)
+3. **Mock 模式**: 可用于快速验证流程 (不执行计算)
+4. **UMD 层是最佳接入点**: `Chip` 类提供了清晰的抽象接口
+
+### 推荐方案
+
+**TTSIM 动态库方案** (详见 `06-simulator-interface.md`)
+
+```bash
+# 启用模拟器
+export TT_METAL_SIMULATOR=/path/to/simulator
+export ARCH_NAME=wormhole_b0
+```
+
+需要实现的接口：
+```c
+void libttsim_init(void);
+void libttsim_exit(void);
+uint32_t libttsim_pci_config_rd32(uint32_t bdf, uint32_t offset);
+void libttsim_tile_rd_bytes(uint32_t x, uint32_t y, uint64_t addr, void* p, uint32_t size);
+void libttsim_tile_wr_bytes(uint32_t x, uint32_t y, uint64_t addr, const void* p, uint32_t size);
+void libttsim_clock(uint32_t n_clocks);
+```
+
+### 与 QEMU 方案对比
+
+| 方面 | TTSIM 方案 | QEMU 方案 |
+|------|-----------|----------|
+| 实现复杂度 | 中等 | 极高 |
+| 代码修改 | 无需修改 tt-metal | 无需修改 tt-metal |
+| 功能完整性 | 可按需实现 | 完整硬件模拟 |
+| 性能 | 较好 | 有开销 |
+| 维护成本 | 低 | 高 |
 
 ## 关键文件位置
 
@@ -37,13 +76,28 @@ tt-metal 源码位于 tt-xla 构建目录中：
 /home/ubuntu/work/tt/tt-xla/third_party/tt-mlir/src/tt-mlir/third_party/tt-metal/src/tt-metal/
 ```
 
-### 已确认的关键文件
+### 核心文件
 
 | 文件 | 作用 |
 |------|------|
-| `tt_metal/llrt/tt_cluster.cpp:117` | 设备检测失败的位置 |
-| `tt_metal/llrt/` | Low-Level Runtime |
-| `tt_metal/third_party/umd/` | User Mode Driver (设备抽象) |
+| `tt_metal/llrt/tt_cluster.cpp` | 设备检测和集群管理 |
+| `tt_metal/llrt/rtoptions.cpp` | 运行时选项 (环境变量解析) |
+| `tt_metal/third_party/umd/device/chip/` | Chip 类实现 |
+| `tt_metal/third_party/umd/device/simulation/` | 模拟器相关实现 |
+| `tt_metal/impl/dispatch/` | 命令提交系统 |
+| `tt_metal/impl/allocator/` | 内存分配器 |
+
+### UMD Chip 类继承体系
+
+```
+Chip (抽象基类)
+├── LocalChip          # PCIe 连接的本地芯片
+├── RemoteChip         # Ethernet 连接的远程芯片
+├── MockChip           # 测试用 Mock (所有操作为空)
+└── SimulationChip     # 模拟基类
+    ├── TTSimChip      # TTSIM (.so 库)
+    └── RTLSimulationChip  # RTL 仿真 (Zebu)
+```
 
 ## 调用链路 (从错误堆栈分析)
 
@@ -69,42 +123,83 @@ tt::tt_metal::MetalContext::instance()
 tt::tt_metal::MetalContext::initialize_base_objects()
     │
     ▼
+tt::Cluster::Cluster() → open_driver()
+    │
+    ├── [Silicon] 检测 PCIe 设备
+    ├── [Simulator] 加载 libttsim.so ← 推荐方案
+    └── [Mock] 加载 YAML 集群描述符
+    │
+    ▼
 tt::Cluster::get_cluster_type_from_cluster_desc()
     │
     ▼
-❌ assert(num_chips > 0) 失败
+❌ TT_FATAL(num_chips > 0) 失败 (Silicon 模式无硬件时)
 ```
-
-## 模拟器接入策略 (初步设想)
-
-### 策略一：替换 UMD 层
-- 实现自己的 `libdevice.so`
-- 模拟设备检测、内存分配、命令提交
-- 难度：中等，需要理解 UMD 接口
-
-### 策略二：修改 tt_cluster.cpp
-- 在设备检测逻辑中添加模拟器分支
-- 当检测到特定环境变量时，返回模拟设备
-- 难度：较低，但侵入性强
-
-### 策略三：实现虚拟 PCIe 设备
-- 在系统层面模拟 Tenstorrent PCIe 设备
-- 对 tt-metal 完全透明
-- 难度：较高，需要内核模块
 
 ## 环境变量
 
-当前设置：
+### 关键配置
+
 ```bash
-ARCH_NAME=wormhole_b0       # 目标架构
-TT_METAL_HOME=(未设置)       # tt-metal 根目录
+# 启用 Simulator 模式 (推荐)
+export TT_METAL_SIMULATOR=/path/to/simulator/directory
+
+# 启用 Mock 模式 (仅测试流程)
+export TT_METAL_MOCK_CLUSTER_DESC_PATH=/path/to/cluster.yaml
+
+# 指定架构 (Simulator/Mock 模式必需)
+export ARCH_NAME=wormhole_b0
+
+# 调试日志
+export TT_METAL_LOGGER_LEVEL=DEBUG
+export TT_METAL_LOGGER_TYPES=Dispatch,Allocator
+```
+
+### 优先级
+
+```
+TT_METAL_SIMULATOR > TT_METAL_MOCK_CLUSTER_DESC_PATH > Silicon (默认)
+```
+
+## 快速验证
+
+### Mock 模式测试
+
+```bash
+# 设置 Mock 模式
+export TT_METAL_MOCK_CLUSTER_DESC_PATH=/path/to/tt-metal/tt_metal/third_party/umd/tests/cluster_descriptor_examples/wormhole_N150.yaml
+export ARCH_NAME=wormhole_b0
+
+# 运行测试
+python -c "
+import torch_xla.core.xla_model as xm
+device = xm.xla_device()
+print(f'Device: {device}')
+"
+```
+
+### Simulator 模式测试
+
+```bash
+# 编译模拟器 (详见 06-simulator-interface.md)
+cd /path/to/simulator
+./build_simulator.sh
+
+# 设置环境变量
+export TT_METAL_SIMULATOR=$(pwd)/build
+export ARCH_NAME=wormhole_b0
+
+# 运行测试
+python test_simulator.py
 ```
 
 ## 参考资料
 
 - [TT-Forge 架构分析报告](/home/ubuntu/work/tt/TT-FORGE-ARCHITECTURE.md)
 - [tt-metal GitHub](https://github.com/tenstorrent/tt-metal)
+- [UMD 仿真文档](tt_metal/third_party/umd/README.emu.md)
 
 ---
 
 *创建时间: 2025-02*
+*最后更新: 2025-02 (完成所有阶段分析)*
