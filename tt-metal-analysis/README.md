@@ -29,6 +29,8 @@ info: No chips detected in the cluster
 | 4 | 命令提交流程 | ✅ 完成 | [`04-command-submission.md`](./04-command-submission.md) |
 | 5 | 内存管理 | ✅ 完成 | [`05-memory-management.md`](./05-memory-management.md) |
 | 6 | 模拟器接口设计 | ✅ 完成 | [`06-simulator-interface.md`](./06-simulator-interface.md) |
+| 7 | Dispatch 架构深度剖析 | ✅ 完成 | [`07-dispatch-architecture-deep-dive.md`](./07-dispatch-architecture-deep-dive.md) |
+| 8 | Socket 模拟器实现审查 | ✅ 完成 | [`08-socket-simulator-implementation-review.md`](./08-socket-simulator-implementation-review.md) |
 
 ## 分析总结
 
@@ -84,7 +86,8 @@ tt-metal 源码位于 tt-xla 构建目录中：
 | `tt_metal/llrt/rtoptions.cpp` | 运行时选项 (环境变量解析) |
 | `tt_metal/third_party/umd/device/chip/` | Chip 类实现 |
 | `tt_metal/third_party/umd/device/simulation/` | 模拟器相关实现 |
-| `tt_metal/impl/dispatch/` | 命令提交系统 |
+| `tt_metal/impl/dispatch/` | 命令提交系统 (详见 [`07-dispatch-architecture-deep-dive.md`](./07-dispatch-architecture-deep-dive.md)) |
+| `tt_metal/impl/dispatch/kernels/` | Prefetcher/Dispatcher 固件 (在设备上运行) |
 | `tt_metal/impl/allocator/` | 内存分配器 |
 
 ### UMD Chip 类继承体系
@@ -193,13 +196,43 @@ export ARCH_NAME=wormhole_b0
 python test_simulator.py
 ```
 
+## 进阶阅读
+
+### 深度理解 tt-metal
+
+**强烈推荐阅读 [`07-dispatch-architecture-deep-dive.md`](./07-dispatch-architecture-deep-dive.md)**
+
+这份文档深入剖析了 tt-metal 的命令分发架构，解答了以下关键问题：
+- Prefetcher 和 Dispatcher 的本质区别
+- Hugepage 在 Host 还是设备上？为什么需要它？
+- Tensix Core 的 5 个 RISC-V 核心如何分工？
+- Prefetcher/Dispatcher 固件如何在硬件上运行？
+- 完整的端到端命令执行流程
+
+适合希望深入理解 tt-metal 运行机制的开发者。
+
+### 实现审查
+
+**实现者必读：[`08-socket-simulator-implementation-review.md`](./08-socket-simulator-implementation-review.md)**
+
+这份文档详细分析了当前基于 Socket 的模拟器实现（位于 `/home/ubuntu/work/tt/tt-umd`），包括：
+- 架构问题：同步阻塞模型、错误处理不完善
+- 协议问题：协议过于简单、缺乏流控机制
+- 性能问题：小数据传输效率低、全局锁竞争
+- 功能缺失：libttsim_clock 未实现、缺少批量传输
+- 改进建议：异步批量模式、协议版本控制、缓存层、细粒度锁
+- 优先级排序：从高到低的改进路线图
+
+适合正在实现或优化模拟器的开发者。
+
 ## 参考资料
 
 - [TT-Forge 架构分析报告](/home/ubuntu/work/tt/TT-FORGE-ARCHITECTURE.md)
 - [tt-metal GitHub](https://github.com/tenstorrent/tt-metal)
 - [UMD 仿真文档](tt_metal/third_party/umd/README.emu.md)
+- [Wormhole B0 ISA 文档](/home/ubuntu/work/tensix/tt-isa-documentation/WormholeB0/) - 硬件架构详细说明
 
 ---
 
 *创建时间: 2025-02*
-*最后更新: 2025-02 (完成所有阶段分析)*
+*最后更新: 2025-02 (完成所有阶段分析，新增 Dispatch 架构深度剖析)*
